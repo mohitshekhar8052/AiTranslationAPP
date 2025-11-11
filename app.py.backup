@@ -1,0 +1,796 @@
+"""
+AI Meeting Summarizer - Streamlit Application
+Main application file for the web interface.
+"""
+
+import streamlit as st
+import os
+import time
+from pathlib import Path
+
+# Import modules
+from summarizer import transcribe, summarize
+from summarizer.export import export_to_txt, export_to_pdf, validate_export_inputs
+import config
+import utils
+
+# Page configuration
+st.set_page_config(
+    page_title=config.APP_TITLE,
+    page_icon=config.APP_ICON,
+    layout=config.PAGE_LAYOUT,
+    initial_sidebar_state="expanded"
+)
+
+# Custom CSS for clean, modern UI
+st.markdown("""
+<style>
+    /* Modern professional styling */
+    .stApp {
+        background-color: #f8fafc;
+    }
+    
+    .main {
+        padding-top: 1rem;
+    }
+    
+    /* Clean headers */
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: 700;
+        color: #1e293b;
+        text-align: center;
+        margin-bottom: 0.5rem;
+    }
+    
+    .sub-header {
+        font-size: 1.1rem;
+        color: #64748b;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    
+    /* Clean boxes */
+    .summary-box, .transcript-box {
+        background: white;
+        padding: 1.5rem;
+        border-radius: 12px;
+        border-left: 4px solid #2563eb;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        margin: 1rem 0;
+    }
+    
+    .summary-box h3, .transcript-box h3 {
+        color: #1e293b;
+        margin-bottom: 1rem;
+    }
+    
+    /* Stats cards */
+    .stats-card {
+        background: white;
+        padding: 1.5rem;
+        border-radius: 10px;
+        border: 1px solid #e2e8f0;
+        text-align: center;
+        transition: box-shadow 0.2s ease;
+    }
+    
+    .stats-card:hover {
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    }
+    
+    /* Buttons */
+    .stButton>button {
+        background-color: #2563eb;
+        color: white;
+        border: none;
+        padding: 0.625rem 1.5rem;
+        font-size: 0.95rem;
+        font-weight: 600;
+        border-radius: 8px;
+        transition: all 0.2s ease;
+    }
+    
+    .stButton>button:hover {
+        background-color: #1e40af;
+        box-shadow: 0 4px 8px rgba(37, 99, 235, 0.2);
+    }
+    
+    .stDownloadButton>button {
+        background-color: #10b981;
+        color: white;
+        border: none;
+        padding: 0.5rem 1.25rem;
+        font-weight: 600;
+        border-radius: 8px;
+        transition: all 0.2s ease;
+    }
+    
+    .stDownloadButton>button:hover {
+        background-color: #059669;
+    }
+    
+    /* Sidebar */
+    section[data-testid="stSidebar"] {
+        background: white;
+        border-right: 1px solid #e2e8f0;
+    }
+    
+    section[data-testid="stSidebar"] h1,
+    section[data-testid="stSidebar"] h2,
+    section[data-testid="stSidebar"] h3 {
+        color: #1e293b !important;
+    }
+    
+    section[data-testid="stSidebar"] p,
+    section[data-testid="stSidebar"] label {
+        color: #475569 !important;
+    }
+    
+    /* Metrics */
+    div[data-testid="stMetricValue"] {
+        font-size: 1.75rem;
+        font-weight: 700;
+        color: #2563eb;
+    }
+    
+    /* File uploader */
+    [data-testid="stFileUploader"] {
+        background: white;
+        border: 2px dashed #cbd5e1;
+        border-radius: 10px;
+        padding: 1.5rem;
+    }
+    
+    [data-testid="stFileUploader"]:hover {
+        border-color: #2563eb;
+    }
+    
+    /* Progress bar */
+    .stProgress > div > div > div > div {
+        background-color: #2563eb;
+    }
+    
+    /* Expanders */
+    .streamlit-expanderHeader {
+        background: white;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        font-weight: 600;
+        color: #1e293b;
+    }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 4px;
+        border-bottom: 2px solid #e2e8f0;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        padding: 0.75rem 1.5rem;
+        font-weight: 600;
+        color: #64748b;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        color: #2563eb;
+        border-bottom: 3px solid #2563eb;
+    }
+    
+    /* Info alerts */
+    .stAlert {
+        border-radius: 8px;
+        border-left: 4px solid #2563eb;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+def initialize_session_state():
+    """Initialize session state variables."""
+    if 'transcript' not in st.session_state:
+        st.session_state.transcript = ""
+    if 'summary' not in st.session_state:
+        st.session_state.summary = ""
+    if 'processing_time' not in st.session_state:
+        st.session_state.processing_time = 0
+    if 'audio_file_path' not in st.session_state:
+        st.session_state.audio_file_path = None
+    if 'files_processed' not in st.session_state:
+        st.session_state.files_processed = 0
+    if 'show_welcome' not in st.session_state:
+        st.session_state.show_welcome = True
+
+
+def render_sidebar():
+    """Render clean sidebar with settings and info"""
+    with st.sidebar:
+        st.markdown("### ⚙️ Configuration")
+        
+        # Transcription settings
+        with st.expander("🎤 Transcription", expanded=False):
+            st.markdown("""
+            **Engine:** Google Speech Recognition  
+            **Formats:** WAV, MP3, M4A, FLAC, OGG  
+            **Max Size:** 200MB
+            """)
+        
+        # Summarization settings
+        with st.expander("📝 Summarization", expanded=False):
+            max_length = st.slider(
+                "Max Length (words)",
+                min_value=50,
+                max_value=500,
+                value=config.DEFAULT_SUMMARY_MAX_LENGTH,
+                step=50
+            )
+            
+            min_length = st.slider(
+                "Min Length (words)",
+                min_value=20,
+                max_value=200,
+                value=config.DEFAULT_SUMMARY_MIN_LENGTH,
+                step=10
+            )
+            
+            st.session_state.max_length = max_length
+            st.session_state.min_length = min_length
+            
+            st.caption("**Model:** BART Large CNN")
+        
+        st.markdown("---")
+        st.markdown("### 📊 Statistics")
+        
+        # Session statistics
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Files", st.session_state.get('files_processed', 0))
+        with col2:
+            if 'transcript' in st.session_state:
+                st.metric("Words", utils.count_words(st.session_state.transcript))
+        
+        st.markdown("---")
+        
+        # Quick tips
+        st.markdown("### 💡 Tips")
+        st.markdown("""
+        • Use clear audio recordings
+        • Minimize background noise  
+        • Keep files under 200MB
+        • Adjust summary length as needed
+        """)
+        
+        st.markdown("---")
+        
+        # Action buttons
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Reset", use_container_width=True):
+                for key in list(st.session_state.keys()):
+                    del st.session_state[key]
+                st.rerun()
+        
+        with col2:
+            if st.button("📖 Help", use_container_width=True):
+                st.info("Check README.md for documentation")
+
+
+def render_header():
+    """Render the main header with branding"""
+    st.markdown("""
+        <div class="main-header animate-fade">
+            <h1>🎙️ AI Meeting Summarizer</h1>
+            <p>Transform your meeting recordings into clear, actionable summaries using advanced AI</p>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    # Feature highlights with cleaner design
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.markdown("""
+            <div class="feature-card">
+                <div style="font-size: 2.5rem;">🎯</div>
+                <h4>Accurate Transcription</h4>
+                <p style="font-size: 0.9rem; color: #6b7280;">Speech-to-text precision</p>
+            </div>
+        """, unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown("""
+            <div class="feature-card">
+                <div style="font-size: 2.5rem;">⚡</div>
+                <h4>Fast Processing</h4>
+                <p style="font-size: 0.9rem; color: #6b7280;">Get results in minutes</p>
+            </div>
+        """, unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown("""
+            <div class="feature-card">
+                <div style="font-size: 2.5rem;">🤖</div>
+                <h4>AI Summarization</h4>
+                <p style="font-size: 0.9rem; color: #6b7280;">Intelligent insights</p>
+            </div>
+        """, unsafe_allow_html=True)
+    
+    with col4:
+        st.markdown("""
+            <div class="feature-card">
+                <div style="font-size: 2.5rem;">📄</div>
+                <h4>Easy Export</h4>
+                <p style="font-size: 0.9rem; color: #6b7280;">PDF & TXT formats</p>
+            </div>
+        """, unsafe_allow_html=True)
+
+
+def process_audio(uploaded_file, model_size, max_length, min_length):
+    """Process uploaded audio file with enhanced progress tracking."""
+    # Create temp directory
+    temp_dir = utils.create_temp_directory(config.TEMP_UPLOAD_DIR)
+    
+    # Save uploaded file
+    file_path = os.path.join(temp_dir, uploaded_file.name)
+    with open(file_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    
+    st.session_state.audio_file_path = file_path
+    
+    # Validate file
+    is_valid, error_msg = utils.validate_audio_file(
+        file_path,
+        config.SUPPORTED_AUDIO_FORMATS,
+        config.MAX_AUDIO_SIZE_MB
+    )
+    
+    if not is_valid:
+        st.error(f"❌ Validation Error: {error_msg}")
+        return False
+    
+    # Create a progress container
+    progress_container = st.container()
+    
+    with progress_container:
+        # Overall progress bar
+        progress_bar = st.progress(0, text="Starting processing...")
+        status_text = st.empty()
+        
+        # Step 1: Transcription
+        status_text.markdown("### 🎤 Step 1: Transcribing Audio")
+        progress_bar.progress(10, text="Preparing audio for transcription...")
+        
+        with st.spinner("Converting and transcribing audio... This may take a few minutes."):
+            start_time = time.time()
+            
+            progress_bar.progress(30, text="Transcribing audio...")
+            transcript_text, transcribe_error = transcribe(file_path, model_name=model_size)
+            
+            if transcribe_error:
+                progress_bar.empty()
+                status_text.empty()
+                st.error(f"❌ Transcription failed: {transcribe_error}")
+                return False
+            
+            st.session_state.transcript = transcript_text
+            transcribe_time = time.time() - start_time
+            
+            progress_bar.progress(50, text="Transcription complete!")
+            st.success(f"✅ Transcription completed in {transcribe_time:.1f} seconds!")
+        
+        # Step 2: Summarization
+        status_text.markdown("### 🤖 Step 2: Generating AI Summary")
+        progress_bar.progress(60, text="Loading summarization model...")
+        
+        with st.spinner("Analyzing text and generating summary..."):
+            start_time = time.time()
+            
+            progress_bar.progress(70, text="Generating summary...")
+            summary_text, summarize_error = summarize(
+                transcript_text,
+                max_length=max_length,
+                min_length=min_length
+            )
+            
+            if summarize_error:
+                progress_bar.empty()
+                status_text.empty()
+                st.error(f"❌ Summarization failed: {summarize_error}")
+                return False
+            
+            st.session_state.summary = summary_text
+            summarize_time = time.time() - start_time
+            st.session_state.processing_time = transcribe_time + summarize_time
+            
+            progress_bar.progress(90, text="Finalizing results...")
+        
+        # Complete
+        progress_bar.progress(100, text="Processing complete!")
+        st.success(f"✅ Summary generated in {summarize_time:.1f} seconds!")
+        
+        # Show total time
+        st.info(f"⏱️ **Total processing time:** {st.session_state.processing_time:.1f} seconds")
+        
+        # Increment files processed counter
+        st.session_state.files_processed += 1
+        
+        # Clean up progress indicators
+        time.sleep(1)
+        progress_bar.empty()
+        status_text.empty()
+    
+    return True
+
+
+def render_results():
+    """Render transcript and summary results with interactive elements."""
+    if not st.session_state.transcript:
+        return
+    
+    st.divider()
+    
+    # Animated success message
+    st.success("✅ Processing Complete! Here are your results:")
+    
+    # Statistics with enhanced cards
+    st.markdown("### 📊 Statistics")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.markdown('<div class="stats-card">', unsafe_allow_html=True)
+        st.metric(
+            "📄 Transcript Words", 
+            utils.count_words(st.session_state.transcript),
+            help="Total words in the transcript"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown('<div class="stats-card">', unsafe_allow_html=True)
+        st.metric(
+            "📝 Summary Words", 
+            utils.count_words(st.session_state.summary),
+            help="Total words in the summary"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown('<div class="stats-card">', unsafe_allow_html=True)
+        compression = (1 - utils.count_words(st.session_state.summary) / utils.count_words(st.session_state.transcript)) * 100
+        st.metric(
+            "🗜️ Compression", 
+            f"{compression:.1f}%",
+            delta=f"{compression:.1f}%",
+            help="Percentage reduction in word count"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col4:
+        st.markdown('<div class="stats-card">', unsafe_allow_html=True)
+        st.metric(
+            "⏱️ Time", 
+            f"{st.session_state.processing_time:.1f}s",
+            help="Total processing time"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    # Display results in tabs for better organization
+    tab1, tab2, tab3 = st.tabs(["📄 Summary", "📝 Full Transcript", "📊 Comparison"])
+    
+    with tab1:
+        st.markdown("### Executive Summary")
+        st.markdown(f'<div class="summary-box">{st.session_state.summary}</div>', unsafe_allow_html=True)
+        
+        # Copy button functionality
+        if st.button("📋 Copy Summary", key="copy_summary"):
+            st.code(st.session_state.summary, language=None)
+            st.info("� Tip: Select and copy the text above!")
+    
+    with tab2:
+        st.markdown("### Complete Transcript")
+        st.markdown(f'<div class="transcript-box">{st.session_state.transcript}</div>', unsafe_allow_html=True)
+        
+        # Copy button functionality
+        if st.button("📋 Copy Transcript", key="copy_transcript"):
+            st.code(st.session_state.transcript, language=None)
+            st.info("💡 Tip: Select and copy the text above!")
+    
+    with tab3:
+        st.markdown("### Side-by-Side Comparison")
+        col_left, col_right = st.columns(2)
+        
+        with col_left:
+            st.markdown("#### 📝 Original Transcript")
+            st.text_area(
+                "Transcript",
+                st.session_state.transcript,
+                height=300,
+                label_visibility="collapsed"
+            )
+        
+        with col_right:
+            st.markdown("#### 📄 AI Summary")
+            st.text_area(
+                "Summary",
+                st.session_state.summary,
+                height=300,
+                label_visibility="collapsed"
+            )
+
+
+def render_export_section():
+    """Render export options with enhanced UI."""
+    if not st.session_state.transcript or not st.session_state.summary:
+        return
+    
+    st.divider()
+    st.markdown("### 💾 Step 3: Export Your Results")
+    
+    # Validate export inputs
+    validation_error = validate_export_inputs(st.session_state.transcript, st.session_state.summary)
+    if validation_error:
+        st.error(validation_error)
+        return
+    
+    st.info("📥 Choose your preferred export format below:")
+    
+    # Create tabs for different export options
+    export_tab1, export_tab2, export_tab3 = st.tabs(["📄 Text Format", "📑 PDF Format", "📊 Both Formats"])
+    
+    with export_tab1:
+        st.markdown("#### Plain Text Export")
+        st.markdown("Perfect for quick sharing and editing")
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.markdown("**Features:**")
+            st.markdown("- ✅ Lightweight file size")
+            st.markdown("- ✅ Easy to edit")
+            st.markdown("- ✅ Universal compatibility")
+        
+        with col2:
+            try:
+                txt_bytes = export_to_txt(
+                    st.session_state.transcript,
+                    st.session_state.summary,
+                    include_timestamp=True
+                )
+                st.download_button(
+                    label="📄 Download TXT",
+                    data=txt_bytes,
+                    file_name="meeting_summary.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                    type="primary"
+                )
+                st.success("✅ Ready!")
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)}")
+    
+    with export_tab2:
+        st.markdown("#### Professional PDF Export")
+        st.markdown("Formatted document with styling and sections")
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.markdown("**Features:**")
+            st.markdown("- ✅ Professional formatting")
+            st.markdown("- ✅ Preserves layout")
+            st.markdown("- ✅ Print-ready")
+        
+        with col2:
+            try:
+                pdf_bytes = export_to_pdf(
+                    st.session_state.transcript,
+                    st.session_state.summary
+                )
+                st.download_button(
+                    label="📑 Download PDF",
+                    data=pdf_bytes,
+                    file_name="meeting_summary.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    type="primary"
+                )
+                st.success("✅ Ready!")
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)}")
+    
+    with export_tab3:
+        st.markdown("#### Download Both Formats")
+        st.markdown("Get both TXT and PDF versions at once")
+        
+        col1, col2, col3 = st.columns([1, 1, 1])
+        
+        with col1:
+            try:
+                txt_bytes = export_to_txt(
+                    st.session_state.transcript,
+                    st.session_state.summary,
+                    include_timestamp=True
+                )
+                st.download_button(
+                    label="📄 Get TXT",
+                    data=txt_bytes,
+                    file_name="meeting_summary.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
+            except Exception as e:
+                st.error(f"TXT Error: {str(e)}")
+        
+        with col2:
+            try:
+                pdf_bytes = export_to_pdf(
+                    st.session_state.transcript,
+                    st.session_state.summary
+                )
+                st.download_button(
+                    label="📑 Get PDF",
+                    data=pdf_bytes,
+                    file_name="meeting_summary.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+            except Exception as e:
+                st.error(f"PDF Error: {str(e)}")
+        
+        with col3:
+            st.markdown("**Bundle:**")
+            st.markdown("Download both formats separately")
+    
+    # Additional export info
+    st.markdown("---")
+    with st.expander("ℹ️ Export Information"):
+        st.markdown("""
+        **What's included in exports:**
+        - 📝 Complete transcript
+        - 📄 AI-generated summary
+        - 📊 Word count statistics
+        - 🕐 Generation timestamp
+        - 📈 Compression ratio
+        
+        **File naming:**
+        - Files are named `meeting_summary.[txt/pdf]`
+        - Rename after download if needed
+        """)
+
+
+def main():
+    """Main application logic."""
+    # Initialize
+    initialize_session_state()
+    
+    # Render components
+    render_header()
+    
+    # Show welcome message on first visit
+    if st.session_state.show_welcome:
+        with st.container():
+            st.markdown("""
+            <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 15px; color: white; margin-bottom: 30px; text-align: center;'>
+                <h2>👋 Welcome to AI Meeting Summarizer!</h2>
+                <p style='font-size: 18px; margin-top: 15px;'>
+                    Transform your audio recordings into concise summaries in just 3 easy steps:
+                </p>
+                <div style='display: flex; justify-content: space-around; margin-top: 20px;'>
+                    <div>
+                        <h3>1️⃣</h3>
+                        <p>Upload Audio</p>
+                    </div>
+                    <div>
+                        <h3>2️⃣</h3>
+                        <p>Process</p>
+                    </div>
+                    <div>
+                        <h3>3️⃣</h3>
+                        <p>Export</p>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            col1, col2, col3 = st.columns([1, 1, 1])
+            with col2:
+                if st.button("✅ Got it! Let's start", use_container_width=True):
+                    st.session_state.show_welcome = False
+                    st.rerun()
+    
+    model_size, max_length, min_length = render_sidebar()
+    
+    # File upload section with enhanced UI
+    st.markdown("### 🎙️ Step 1: Upload Your Audio File")
+    
+    # Create a nice container for file upload
+    with st.container():
+        uploaded_file = st.file_uploader(
+            "Drag and drop or browse for an audio file",
+            type=['wav', 'mp3', 'm4a', 'flac', 'ogg'],
+            help=f"Maximum file size: {config.MAX_AUDIO_SIZE_MB}MB",
+            label_visibility="collapsed"
+        )
+    
+    if uploaded_file is not None:
+        # Display file info in an attractive card
+        col1, col2, col3 = st.columns([2, 1, 1])
+        
+        with col1:
+            st.markdown(f"**📁 File:** `{uploaded_file.name}`")
+        with col2:
+            file_size = len(uploaded_file.getvalue()) / (1024 * 1024)
+            st.markdown(f"**� Size:** `{file_size:.2f} MB`")
+        with col3:
+            file_ext = uploaded_file.name.split('.')[-1].upper()
+            st.markdown(f"**🎵 Format:** `{file_ext}`")
+        
+        st.markdown("---")
+        
+        # Audio player with label
+        st.markdown("### 🎧 Preview Your Audio")
+        st.audio(uploaded_file, format=f'audio/{uploaded_file.name.split(".")[-1]}')
+        
+        st.markdown("---")
+        
+        # Process button with confirmation
+        st.markdown("### ⚡ Step 2: Process Your Audio")
+        
+        col1, col2, col3 = st.columns([1, 2, 1])
+        
+        with col2:
+            process_button = st.button(
+                "🚀 Start Processing",
+                type="primary",
+                use_container_width=True,
+                help="Click to transcribe and summarize your audio"
+            )
+        
+        if process_button:
+            # Show processing indicator
+            with st.spinner("Processing..."):
+                success = process_audio(uploaded_file, model_size, max_length, min_length)
+                if success:
+                    st.balloons()
+                    st.snow()
+    else:
+        # Show helpful message when no file is uploaded
+        st.info("👆 Please upload an audio file to get started!")
+        
+        # Display supported formats
+        with st.expander("📋 Supported Audio Formats"):
+            col1, col2, col3, col4, col5 = st.columns(5)
+            with col1:
+                st.markdown("### 🎵\n**WAV**")
+            with col2:
+                st.markdown("### 🎵\n**MP3**")
+            with col3:
+                st.markdown("### 🎵\n**M4A**")
+            with col4:
+                st.markdown("### 🎵\n**FLAC**")
+            with col5:
+                st.markdown("### 🎵\n**OGG**")
+    
+    # Display results
+    render_results()
+    
+    # Export section
+    render_export_section()
+    
+    # Footer with enhanced styling
+    st.divider()
+    
+    # Clean footer
+    st.divider()
+    st.markdown("""
+    <div style='text-align: center; padding: 2rem; background: white; border-radius: 10px; border-top: 3px solid #2563eb;'>
+        <p style='margin: 0; color: #64748b; font-size: 0.95rem;'>
+            Built with <strong>Streamlit</strong>, <strong>BART AI</strong>, and <strong>SpeechRecognition</strong>
+        </p>
+        <p style='margin: 0.5rem 0 0 0; color: #94a3b8; font-size: 0.875rem;'>
+            Transform meetings into insights • © 2025
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+
+if __name__ == "__main__":
+    main()
